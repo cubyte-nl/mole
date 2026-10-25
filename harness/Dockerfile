@@ -30,18 +30,19 @@ RUN apt-get update \
         ncat \
         curl \
     && rm -rf /var/lib/apt/lists/*
-# Metasploit payload generation (msfvenom) via the official self-extracting
-# installer (no versioned archive exists; -latest- matches the go install
-# pattern above). Stateless use only — no msfconsole, no services. The
-# installer lands the launcher at <prefix>/app/msfvenom (it also symlinks
-# /usr/local/bin/msfvenom itself; we re-link it explicitly so the build
-# fails loudly if that ever changes).
-RUN curl -fsSL -o /tmp/metasploit.run https://downloads.metasploit.com/data/releases/metasploit-latest-linux-x64-installer.run \
-    && chmod +x /tmp/metasploit.run \
-    && /tmp/metasploit.run --mode unattended --unattendedmodeui none --prefix /opt/metasploit --baseunixservice_install_as_service 0 \
-    && ln -sf /opt/metasploit/app/msfvenom /usr/local/bin/msfvenom \
-    && rm -f /tmp/metasploit.run \
-    && msfvenom --version
+# Metasploit payload generation (msfvenom) from the official apt repo, pinned
+# by the committed signing key (Rapid7 Release Engineering). The prebuilt
+# .deb installs the full framework in seconds; the self-extracting omnibus
+# took ~1h. Stateless use only — no msfconsole, no services. The package puts
+# msfvenom on PATH (/usr/bin/msfvenom); test -x fails the build loudly if that
+# ever changes.
+COPY metasploit-framework.gpg /usr/share/keyrings/metasploit-framework.gpg
+RUN echo "deb [signed-by=/usr/share/keyrings/metasploit-framework.gpg] https://downloads.metasploit.com/data/releases/metasploit-framework/apt lucid main" \
+        > /etc/apt/sources.list.d/metasploit-framework.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends metasploit-framework \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -x /usr/bin/msfvenom
 COPY --from=build /out/mole /usr/local/bin/mole
 COPY --from=build /go/bin/nuclei /usr/local/bin/nuclei
 COPY --from=build /go/bin/ffuf /usr/local/bin/ffuf
