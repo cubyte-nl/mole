@@ -26,9 +26,10 @@ import (
 )
 
 // NewRegistry builds the default set of tools over the scope boundary.
-// The active, mutating tools (nuclei, ffuf, web_check, http_request, exec)
-// are gated behind vulnScanning — a reconnaissance engagement cannot reach
-// them even if the model asks. knowledge_search is always registered: it
+// The active, mutating tools (nuclei, ffuf, web_check, http_request, exec,
+// crack, netcat, payload) are gated behind vulnScanning — a reconnaissance
+// engagement cannot reach them even if the model asks. knowledge_search is
+// always registered: it
 // reads the embedded technique knowledge (service enumeration checklists,
 // and — for exploit-in-scope engagements — the post-foothold playbook, the
 // privilege-escalation checklist and the core web-bug playbook) and never
@@ -45,7 +46,8 @@ func NewRegistry(vulnScanning bool, led *ledger.Ledger, kb *knowledge.Store) *co
 		RecordFinding{L: led}, UpdateFinding{L: led},
 	}
 	if vulnScanning {
-		all = append(all, Nuclei{}, Ffuf{}, WebCheck{}, HTTPRequest{}, &Exec{L: led})
+		all = append(all, Nuclei{}, Ffuf{}, WebCheck{}, HTTPRequest{}, &Exec{L: led},
+			Crack{}, &Netcat{}, Payload{})
 	}
 	return core.NewRegistry[*scope.Scope](vulnScanning, all...)
 }

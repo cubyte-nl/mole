@@ -166,6 +166,42 @@ next host → repeat the checklist.
   and remoting enabled).
 - **RDP** (3389) when you have valid creds and it is open.
 
+## Harness toolset (payload, netcat, crack)
+
+These are harness tools (vulnerability-scanning mode only), not target
+commands — they are scope-gated and bounded in code (timeouts, 8 KB output
+caps), so no limits need restating here.
+
+### Reverse shell: netcat listener + msfvenom payload
+
+Order matters — the listener must be armed **before** the payload is fired,
+or the connection is dropped:
+
+1. `netcat` with `action=arm` (the default), `source` = the in-scope host the
+   shell will come from, `port` (default 4444). It returns the harness's
+   local IP as `lhost` and the armed port. The local bind port is not target
+   traffic and is not scope-gated; `source` is.
+2. `payload` with `target` = that same host, `payload` =
+   `linux/x64/shell_reverse_tcp` (or the target's arch), `format` = `cmd`
+   (one-liner) or `raw`/`elf` for staged binaries, and `LHOST`/`LPORT` set to
+   the listener's `lhost` and port. For a reverse payload these are
+   mandatory — without them the payload connects nowhere.
+3. Fire the generated one-liner on the target (via the `exec` vector or the
+   injection point that gave the foothold).
+4. `netcat` with `action=collect` to read what arrived. A listener lives 300 s
+   by default (900 s max); a new arm replaces the old one. If collect returns
+   nothing, re-arm and re-fire — do not assume the shell failed.
+
+### Offline cracking with crack
+
+For a hash captured during the run (NTLM from SMB/IPC, LM, SHA-*, bcrypt,
+crypt): `crack` with `hash` and `source` = the in-scope host it came from
+(scope-gated). Hash type is auto-detected from the format — pass `mode` only
+when detection is ambiguous (32-hex defaults to NTLM; MD5 is mode 0). It uses
+the bundled top-1000 wordlist by default and is time-boxed (120 s default,
+600 s max); an uncracked hash returns `cracked: false`, which is a result,
+not an error — record the hash and its source, and move on.
+
 ## Interpreting findings (apply to every result)
 
 - **Service finding** (open port + banner): identify product and version,
