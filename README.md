@@ -5,7 +5,7 @@ two things:
 
 | Path          | What it is                                                                 |
 |---------------|----------------------------------------------------------------------------|
-| `mole`        | This front-end: builds the image, collects the LLM config, asks for an objective, runs the container and tails its output |
+| `mole`        | This front-end: pulls (or builds) the image, collects the LLM config, asks for an objective, runs the container and tails its output |
 | `harness/`    | The MOLE harness itself (agent loop, tools, reporting) — see `harness/README.md` |
 | `engagement/` | Per-engagement data: `scope.yaml`, reports, transcripts (gitignored)       |
 
@@ -18,11 +18,14 @@ go build -o mole .
 
 `mole` walks through four steps:
 
-1. **Docker image** — fingerprints the `harness/` build context (SHA-256 of
-   the context files, respecting `.dockerignore`, plus `Dockerfile` and
+1. **Docker image** — by default pulls the image from the registry: a missing
+   image is downloaded, a newer one is offered, and if the registry can't be
+   reached the local image is used as is. With `-build` it builds locally
+   instead: it fingerprints the `harness/` build context (SHA-256 of the
+   context files, respecting `.dockerignore`, plus `Dockerfile` and
    `.dockerignore`) and compares it to the `mole.version` label on the local
-   image. The image is rebuilt only when it is missing, has no version label,
-   or a newer version is available; an up-to-date image is reused after a
+   image, rebuilding only when the image is missing, has no version label, or a
+   newer version is available; an up-to-date image is reused after a
    `Rebuild anyway [y/N]` confirm (default: keep the current image).
 2. **Configure** — prompts for the LLM environment and writes `launcher.env`
    (prefilled from any existing config; values are passed to the container
@@ -37,17 +40,17 @@ When it finishes, the report and transcript land in
 ### Flags
 
 ```
--image        Docker image tag (default "mole")
+-image        Docker image tag (default "cubyteimages/cubyte-mole:latest")
 -config       config file path (default "launcher.env")
 -engagement   engagement name, e.g. cubyte
 -dir          engagement directory (default "engagement")
 -objective    objective text (skips the prompt)
 -max-steps    tool-step budget (0 = harness default)
 -network      docker network, e.g. host (LAN-only targets)
--no-build     skip the image build entirely (no context check, no prompt)
+-build        build the image locally instead of pulling it
+-no-build     skip step 1 and use the local image as is (no pull, no build)
 -no-add-host  don't map host.docker.internal (remote LLM)
--dry-run      print the planned build and the docker run command; skips the
-              image check
+-dry-run      print the planned docker commands without executing them
 ```
 
 ## LLM

@@ -1,4 +1,3 @@
-// Package tools implements the gated recon tools. Every tool asks the scope
 // gate before it touches a target; a denied target is reported back and never
 // executed. The tools are exposed to the LLM as function calls, and can also
 // be used directly.
@@ -21,18 +20,34 @@ import (
 
 	core "github.com/cubyte-nl/agent-core/tools"
 
+	"mole/internal/knowledge"
+	"mole/internal/ledger"
 	"mole/internal/scope"
 )
 
 // NewRegistry builds the default set of tools over the scope boundary.
-// Vulnerability-scanning tools (nuclei) are gated behind vulnScanning — they
-// are the only mutating tools, so a reconnaissance engagement cannot reach
-// them even if the model asks.
-func NewRegistry(vulnScanning bool) *core.Registry[*scope.Scope] {
-	return core.NewRegistry[*scope.Scope](vulnScanning,
+// The active, mutating tools (nuclei, ffuf, web_check, http_request, exec)
+// are gated behind vulnScanning — a reconnaissance engagement cannot reach
+// them even if the model asks. knowledge_search is always registered: it
+// reads the embedded technique knowledge (service enumeration checklists,
+// and — for exploit-in-scope engagements — the post-foothold playbook, the
+// privilege-escalation checklist and the core web-bug playbook) and never
+// touches a target. shell is also always registered: it runs small local
+// scripts inside the harness (adapting exploits, parsing output) and never
+// mutates the target itself — its safety rests on the prompt rules and the
+// transcript audit, so it bypasses the mutate gate deliberately. The ledger
+// tools act on the engagement's findings ledger (the agent's working memory),
+// which is re-injected into the model's context every step.
+func NewRegistry(vulnScanning bool, led *ledger.Ledger, kb *knowledge.Store) *core.Registry[*scope.Scope] {
+	all := []core.Tool[*scope.Scope]{
 		DNS{}, Nmap{}, HTTPProbe{}, TLSProbe{}, TCPProbe{}, SecurityHeaders{}, Subdomains{}, NoteOutOfScope{},
-		Nuclei{},
-	)
+		KnowledgeSearch{K: kb}, Shell{},
+		RecordFinding{L: led}, UpdateFinding{L: led},
+	}
+	if vulnScanning {
+		all = append(all, Nuclei{}, Ffuf{}, WebCheck{}, HTTPRequest{}, &Exec{L: led})
+	}
+	return core.NewRegistry[*scope.Scope](vulnScanning, all...)
 }
 
 // runExternal executes an external binary against an in-scope target and
@@ -57,6 +72,22 @@ func strArg(args map[string]any, key string) string {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+// boolArg reads a boolean argument, tolerating the JSON string forms ("true",
+// "1") some model backends emit. Missing keys are false.
+func boolArg(args map[string]any, key string) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true" || v == "1"
+	case float64:
+		return v != 0
+	case int:
+		return v != 0
+	}
+	return false
 }
 
 func intArg(args map[string]any, key string, def int) int {

@@ -6,10 +6,10 @@
 //
 // The loop is generic over the agent's boundary type B and owns only the
 // control flow — chat, tool dispatch, the operator-confirmation step, the step
-// budget with a forced final report, the transcript, retries, and truncated-
-// response handling. Everything domain-specific (the system prompt text, the
-// live action-log rendering, the report body, the transcript's start metadata)
-// is injected through Config.
+// and time budgets with a forced final report, the transcript, retries, and
+// truncated-response handling. Everything domain-specific (the system prompt
+// text, the live action-log rendering, the report body, the transcript's start
+// metadata) is injected through Config.
 package agent
 
 import (
@@ -30,6 +30,10 @@ type Config[B tools.Boundary] struct {
 	MaxSteps  int
 	Objective string
 	ReportDir string
+	// MaxDuration bounds a run's wall-clock time; once it has passed, no new
+	// turn starts and the model is asked for its final report, as when the
+	// step budget runs out. Zero means no limit.
+	MaxDuration time.Duration
 	// Out receives the live action log; nil disables printing.
 	Out func(line string)
 	// ProgressInterval is how often a heartbeat line is emitted while a tool is
@@ -41,6 +45,14 @@ type Config[B tools.Boundary] struct {
 	// window. The full result is always kept in the transcript; only the model's
 	// copy is capped. Unset defaults to 8 KiB; a negative value feeds it uncapped.
 	MaxToolResult int
+	// RenderTurnState, when set, renders the compact state the model should
+	// carry through the run (working memory: findings, plan, open threads).
+	// The text is injected as a user message before every chat call, replacing
+	// the previous turn's state message in place, so the model always sees the
+	// current state without stale snapshots accumulating in the context. An
+	// empty string leaves the context unchanged; nil disables the hook.
+	// turn is the number of chat calls already made; steps the tool steps used.
+	RenderTurnState func(turn, steps int) string
 
 	// SystemPrompt builds the system prompt from the boundary, objective and
 	// model. Required.
@@ -151,6 +163,9 @@ func Run[B tools.Boundary](ctx context.Context, b B, client *llm.Client, reg *to
 			"objective": cfg.Objective,
 			"max_steps": cfg.MaxSteps,
 		}
+		if cfg.MaxDuration > 0 {
+			start["max_duration"] = cfg.MaxDuration.String()
+		}
 		for k, v := range cfg.StartMeta {
 			start[k] = v
 		}
@@ -166,9 +181,35 @@ func Run[B tools.Boundary](ctx context.Context, b B, client *llm.Client, reg *to
 	specs := reg.Specs()
 
 	steps := 0
+	turn := 0
 	truncated := 0
 	var final string
-	for steps < cfg.MaxSteps {
+	stateIdx := -1 // index of the injected turn-state message, or -1 if none
+	timeUp := func() bool { return cfg.MaxDuration > 0 && time.Since(now) >= cfg.MaxDuration }
+	// injectState keeps the turn-state message current right before each chat
+	// call: the first non-empty state is appended, later ones replace it in
+	// place, so the context never accumulates stale snapshots.
+	injectState := func() {
+		if cfg.RenderTurnState == nil {
+			return
+		}
+		s := cfg.RenderTurnState(turn, steps)
+		if s == "" {
+			return
+		}
+		if stateIdx < 0 {
+			messages = append(messages, llm.Message{Role: "user", Content: s})
+			stateIdx = len(messages) - 1
+		} else {
+			messages[stateIdx] = llm.Message{Role: "user", Content: s}
+		}
+		if tw != nil {
+			writeJSONL(tw, map[string]any{"event": "state", "ts": time.Now().UTC().Format(time.RFC3339), "turn": turn, "steps": steps, "content": s})
+		}
+	}
+	for steps < cfg.MaxSteps && !timeUp() {
+		injectState()
+		turn++
 		msg, finish, err := client.Chat(ctx, messages, specs)
 		if err != nil {
 			return nil, fmt.Errorf("step %d: %w", steps+1, err)
@@ -226,11 +267,16 @@ func Run[B tools.Boundary](ctx context.Context, b B, client *llm.Client, reg *to
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		// Step budget exhausted: force a final report from what the model has seen.
-		say("· step budget reached; asking for the final report")
+		// Step or time budget exhausted: force a final report from what the
+		// model has seen.
+		budget := "step"
+		if timeUp() {
+			budget = "time"
+		}
+		say("· " + budget + " budget reached; asking for the final report")
 		budgetMsg := llm.Message{
 			Role:    "user",
-			Content: "You have reached the step budget. Write your final report now, based on the evidence gathered so far.",
+			Content: "You have reached the " + budget + " budget. Write your final report now, based on the evidence gathered so far.",
 		}
 		messages = append(messages, budgetMsg)
 		logMsg(budgetMsg)

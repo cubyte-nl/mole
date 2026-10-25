@@ -115,7 +115,7 @@ func TestNoteOutOfScopeRefusesCIDR(t *testing.T) {
 }
 
 func TestNoteOutOfScopeInRegistry(t *testing.T) {
-	reg := NewRegistry(false)
+	reg := NewRegistry(false, newLedger(t), newKB())
 	if !registered(reg, "note_out_of_scope") {
 		t.Fatal("note_out_of_scope must be registered")
 	}

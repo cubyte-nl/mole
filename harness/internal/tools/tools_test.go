@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +16,21 @@ import (
 
 	core "github.com/cubyte-nl/agent-core/tools"
 
+	"mole/internal/ledger"
 	"mole/internal/scope"
 )
 
 var testCtx = context.Background()
+
+// newLedger opens a throwaway findings ledger for a test.
+func newLedger(t *testing.T) *ledger.Ledger {
+	t.Helper()
+	l, err := ledger.New(filepath.Join(t.TempDir(), "ledger.json"))
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	return l
+}
 
 // registered reports whether a tool of the given name is exposed by the
 // registry, via its public Specs (the core registry's map is unexported).
@@ -139,7 +151,7 @@ func TestTCPProbe(t *testing.T) {
 	}
 
 	// Registry path: JSON arguments are parsed.
-	reg := NewRegistry(false)
+	reg := NewRegistry(false, newLedger(t), newKB())
 	if res := reg.Run(testCtx, s, "tcp_probe", `{"host":"127.0.0.1","ports":[`+strconv.Itoa(openPort)+`]}`); !res.Allowed {
 		t.Errorf("registry tcp_probe denied: %s", res.Reason)
 	}
@@ -261,12 +273,12 @@ func TestSubdomains(t *testing.T) {
 }
 
 func TestRegistrySpecsIncludeNewTools(t *testing.T) {
-	specs := NewRegistry(false).Specs()
+	specs := NewRegistry(false, newLedger(t), newKB()).Specs()
 	names := map[string]bool{}
 	for _, sp := range specs {
 		names[sp.Function.Name] = true
 	}
-	for _, want := range []string{"dns_lookup", "nmap", "http_probe", "tls_probe", "tcp_probe", "security_headers", "subdomains"} {
+	for _, want := range []string{"dns_lookup", "nmap", "http_probe", "tls_probe", "tcp_probe", "security_headers", "subdomains", "knowledge_search", "shell", "record_finding", "update_finding"} {
 		if !names[want] {
 			t.Errorf("registry missing tool %q", want)
 		}
@@ -290,12 +302,17 @@ func TestNuclei(t *testing.T) {
 		t.Errorf("out-of-scope URL was allowed: %s", res.Reason)
 	}
 
+	// A typo in severity is denied up front, not wasted on a full run.
+	if res := (Nuclei{}).Run(testCtx, s, map[string]any{"url": "http://127.0.0.1/", "severity": "severe"}); res.Allowed {
+		t.Errorf("invalid severity was allowed: %s", res.Reason)
+	}
+
 	// Registry gating: a reconnaissance engagement cannot reach nuclei at all.
-	if res := NewRegistry(false).Run(testCtx, s, "nuclei", `{"url":"http://127.0.0.1/"}`); res.Allowed {
+	if res := NewRegistry(false, newLedger(t), newKB()).Run(testCtx, s, "nuclei", `{"url":"http://127.0.0.1/"}`); res.Allowed {
 		t.Error("nuclei reachable in a reconnaissance registry")
 	}
 	reconNames := map[string]bool{}
-	for _, sp := range NewRegistry(false).Specs() {
+	for _, sp := range NewRegistry(false, newLedger(t), newKB()).Specs() {
 		reconNames[sp.Function.Name] = true
 	}
 	if reconNames["nuclei"] {
@@ -304,7 +321,7 @@ func TestNuclei(t *testing.T) {
 
 	// Active engagement: the gate passes and the run is allowed, degrading
 	// gracefully when the binary is missing (same pattern as nmap).
-	res := NewRegistry(true).Run(testCtx, s, "nuclei", `{"url":"http://127.0.0.1/"}`)
+	res := NewRegistry(true, newLedger(t), newKB()).Run(testCtx, s, "nuclei", `{"url":"http://127.0.0.1/"}`)
 	if !res.Allowed {
 		t.Fatalf("in-scope nuclei run denied: %s", res.Reason)
 	}
@@ -315,6 +332,120 @@ func TestNuclei(t *testing.T) {
 		if !strings.Contains(res.Reason, "not installed") {
 			t.Errorf("expected graceful-degradation reason, got %q", res.Reason)
 		}
+	}
+}
+
+func TestFfuf(t *testing.T) {
+	s := testScope("127.0.0.1")
+
+	// Missing url is denied before anything else.
+	if res := (Ffuf{}).Run(testCtx, s, map[string]any{}); res.Allowed {
+		t.Error("missing url was allowed")
+	}
+
+	// Out-of-scope target is gate-denied (before the binary is looked up).
+	if res := (Ffuf{}).Run(testCtx, s, map[string]any{"url": "http://example.org/"}); res.Allowed {
+		t.Errorf("out-of-scope URL was allowed: %s", res.Reason)
+	}
+
+	// Registry gating: a reconnaissance engagement cannot reach ffuf at all,
+	// while knowledge_search (a local, non-mutating tool) is always exposed.
+	if res := NewRegistry(false, newLedger(t), newKB()).Run(testCtx, s, "ffuf", `{"url":"http://127.0.0.1/"}`); res.Allowed {
+		t.Error("ffuf reachable in a reconnaissance registry")
+	}
+	reconNames := map[string]bool{}
+	for _, sp := range NewRegistry(false, newLedger(t), newKB()).Specs() {
+		reconNames[sp.Function.Name] = true
+	}
+	if reconNames["ffuf"] {
+		t.Error("ffuf spec exposed in a reconnaissance registry")
+	}
+	if !reconNames["knowledge_search"] {
+		t.Error("knowledge_search missing from a reconnaissance registry")
+	}
+
+	// Active engagement: the gate passes and the run is allowed, degrading
+	// gracefully when the binary is missing (same pattern as nuclei).
+	res := NewRegistry(true, newLedger(t), newKB()).Run(testCtx, s, "ffuf", `{"url":"http://127.0.0.1/"}`)
+	if !res.Allowed {
+		t.Fatalf("in-scope ffuf run denied: %s", res.Reason)
+	}
+	if res.Target != "127.0.0.1" {
+		t.Errorf("target = %q, want 127.0.0.1", res.Target)
+	}
+	if _, err := exec.LookPath("ffuf"); err != nil {
+		if !strings.Contains(res.Reason, "not installed") {
+			t.Errorf("expected graceful-degradation reason, got %q", res.Reason)
+		}
+	}
+}
+
+func TestExpandFfufPaths(t *testing.T) {
+	// Extensionless entries are probed as-is and with each extension; entries
+	// that already contain a dot are full filenames and are not expanded.
+	got := expandFfufPaths([]string{"admin", ".git", "wp-login.php"}, []string{"php", "asp"})
+	want := []string{"admin", "admin.php", "admin.asp", ".git", "wp-login.php"}
+	if len(got) != len(want) || !equalStrings(got, want) {
+		t.Errorf("expanded = %v, want %v", got, want)
+	}
+
+	// Duplicates collapse.
+	got = expandFfufPaths([]string{"admin", "admin"}, []string{"php"})
+	if !equalStrings(got, []string{"admin", "admin.php"}) {
+		t.Errorf("dupes not collapsed: %v", got)
+	}
+
+	// No extensions: entries are probed as-is.
+	got = expandFfufPaths([]string{"a", "b"}, nil)
+	if !equalStrings(got, []string{"a", "b"}) {
+		t.Errorf("no-extension expansion = %v", got)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestTrimFfufOutput(t *testing.T) {
+	raw := `{"results":[
+		{"input":{"FFUF":"admin.php"},"status":403,"length":152},
+		{"input":{"FFUF":".git"},"status":200,"length":100}
+	]}`
+	out := trimFfufOutput(raw)
+	if !strings.Contains(out, "[403] /admin.php (length=152)") ||
+		!strings.Contains(out, "[200] /.git (length=100)") {
+		t.Errorf("hit lines malformed:\n%s", out)
+	}
+
+	// Non-JSON output (errors, empty runs) passes through trimmed.
+	if got := trimFfufOutput("  ffuf error: something\n"); got != "ffuf error: something" {
+		t.Errorf("non-JSON passthrough = %q", got)
+	}
+
+	// Hits beyond maxFfufHits are capped, with a note about the dropped ones.
+	var b strings.Builder
+	b.WriteString(`{"results":[`)
+	for i := 0; i < maxFfufHits+3; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"input":{"FFUF":"p%d"},"status":200,"length":1}`, i)
+	}
+	b.WriteString("]}")
+	capped := trimFfufOutput(b.String())
+	if !strings.Contains(capped, "3 additional hit(s) trimmed") {
+		t.Errorf("cap note missing:\n%s", capped)
+	}
+	if lines := strings.Split(capped, "\n"); len(lines) != maxFfufHits+1 { // hits + cap note
+		t.Errorf("expected %d lines, got %d", maxFfufHits+1, len(lines))
 	}
 }
 
@@ -331,5 +462,72 @@ func TestTrimNucleiOutput(t *testing.T) {
 	}
 	if !strings.Contains(out, "tls-version") || !strings.Contains(out, "matched-at") || !strings.Contains(out, "severity") {
 		t.Errorf("finding identity fields should be kept:\n%s", out)
+	}
+}
+
+func TestTrimNucleiOutputOrderingAndCap(t *testing.T) {
+	mk := func(id, sev string) string {
+		return fmt.Sprintf(`{"template-id":%q,"info":{"severity":%q},"matched-at":"127.0.0.1:443","response":"x"}`, id, sev)
+	}
+	// A medium finding listed before an info one, and a critical one last:
+	// the output must be re-ordered most-severe first.
+	out := trimNucleiOutput(mk("medium-one", "medium") + "\n" + mk("info-one", "info") + "\n" + mk("critical-one", "critical") + "\n")
+	if strings.Index(out, "critical-one") > strings.Index(out, "medium-one") ||
+		strings.Index(out, "medium-one") > strings.Index(out, "info-one") {
+		t.Errorf("findings should be ordered most-severe first:\n%s", out)
+	}
+
+	// maxFindings+1 findings: capped at maxFindings, with a note about the
+	// dropped one. The dropped finding is the last same-severity one (stable
+	// order); earlier info findings and the critical one survive.
+	var b strings.Builder
+	for i := 0; i < maxFindings-1; i++ {
+		fmt.Fprintf(&b, "%s\n", mk(fmt.Sprintf("info-%d", i), "info"))
+	}
+	fmt.Fprintf(&b, "%s\n%s\n", mk("info-49", "info"), mk("critical-final", "critical"))
+	capped := trimNucleiOutput(b.String())
+	if !strings.Contains(capped, "1 lower-severity finding(s) trimmed") {
+		t.Errorf("cap note missing:\n%s", capped)
+	}
+	if !strings.Contains(capped, "info-0") {
+		t.Errorf("earlier same-severity findings should survive the cap:\n%s", capped)
+	}
+	if strings.Contains(capped, "info-49") {
+		t.Errorf("the dropped finding should be the last same-severity one:\n%s", capped)
+	}
+	if !strings.Contains(capped, "critical-final") {
+		t.Errorf("the most severe finding must survive the cap:\n%s", capped)
+	}
+	lines := strings.Split(strings.TrimSpace(capped), "\n")
+	if len(lines) != maxFindings+1 { // findings + cap note
+		t.Errorf("expected %d lines, got %d", maxFindings+1, len(lines))
+	}
+}
+
+func TestTrimNucleiOutputDedupe(t *testing.T) {
+	mk := func(matcher string) string {
+		return fmt.Sprintf(`{"template-id":"http-missing-security-headers","info":{"severity":"info"},"matched-at":"http://127.0.0.1/","matcher-name":%q,"request":"r","response":"resp"}`, matcher)
+	}
+	// One template can match once per matcher on the same target (real
+	// nuclei emits ~8 lines for missing-security-headers); they collapse to
+	// one line with the matcher names aggregated.
+	out := trimNucleiOutput(mk("strict-transport-security") + "\n" + mk("content-security-policy") + "\n" + mk("strict-transport-security") + "\n")
+	if got := strings.Count(out, "http-missing-security-headers"); got != 1 {
+		t.Errorf("expected 1 deduplicated finding line, got %d:\n%s", got, out)
+	}
+	for _, m := range []string{"strict-transport-security", "content-security-policy"} {
+		if !strings.Contains(out, m) {
+			t.Errorf("matcher name %q should survive aggregation:\n%s", m, out)
+		}
+	}
+	if strings.Contains(out, "resp") {
+		t.Errorf("response body should be trimmed:\n%s", out)
+	}
+
+	// The same template on a different target is a distinct finding.
+	other := `{"template-id":"http-missing-security-headers","info":{"severity":"info"},"matched-at":"http://other/"}`
+	out = trimNucleiOutput(mk("content-security-policy") + "\n" + other + "\n")
+	if got := strings.Count(out, "http-missing-security-headers"); got != 2 {
+		t.Errorf("same template on two targets should stay two lines:\n%s", out)
 	}
 }

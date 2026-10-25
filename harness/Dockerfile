@@ -8,13 +8,14 @@
 FROM golang:1.27 AS build
 WORKDIR /src
 # Dependencies (incl. agent-core) are vendored, so the module build needs no
-# GitLab access. (The nuclei install below still fetches from the network.)
+# GitLab access. (The nuclei/ffuf installs below still fetch from the network.)
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mole .
 # Vulnerability-scanning tooling (opt-in via vuln_scanning: true). Inert for recon-only
 # engagements — the registry gate keeps it unreachable — but bundled so the
 # image is self-contained. Templates are fetched by nuclei on first use.
-RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
+    && go install github.com/ffuf/ffuf/v2@latest
 
 FROM ubuntu:24.04
 RUN apt-get update \
@@ -22,9 +23,13 @@ RUN apt-get update \
         nmap \
         ca-certificates \
         dnsutils \
+        git \
+        python3 \
+        python3-requests \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/mole /usr/local/bin/mole
 COPY --from=build /go/bin/nuclei /usr/local/bin/nuclei
+COPY --from=build /go/bin/ffuf /usr/local/bin/ffuf
 WORKDIR /work
 ENTRYPOINT ["mole"]
 CMD ["help"]

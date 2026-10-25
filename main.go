@@ -1,15 +1,17 @@
 // Command mole is a starting point for running the MOLE harness end to end:
-// it builds the Docker image (only when the build context changed — the
-// image carries a context-version label, and an up-to-date image is reused
-// after a quick confirm), asks for the LLM environment and persists it to a
-// config file, asks for an objective, checks (and offers to change) the
-// engagement's vulnerability-scanning state, then runs the container and streams
-// (tails) its output to the terminal.
+// it pulls the Docker image from the registry (or builds it locally with
+// -build, only when the build context changed — the image carries a
+// context-version label, and an up-to-date image is reused after a quick
+// confirm), asks for the LLM environment and persists it to a config file,
+// asks for an objective, checks (and offers to change) the engagement's
+// vulnerability-scanning state, then runs the container and streams (tails)
+// its output to the terminal.
 //
 // Usage:
 //
-//	mole                         full interactive flow
-//	mole -no-build               skip the image build
+//	mole                         full interactive flow (pulls the image)
+//	mole -build                  build the image locally instead of pulling
+//	mole -no-build               use the local image as is
 //	mole -objective "..."        skip the objective prompt
 //	mole -dry-run                print the docker run command, don't execute
 //
@@ -21,6 +23,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -35,7 +38,7 @@ import (
 )
 
 const (
-	defaultImage  = "mole"
+	defaultImage  = "cubyteimages/cubyte-mole:latest"
 	defaultConfig = "launcher.env"
 	appDir        = "harness" // subdirectory holding the MOLE Dockerfile/context
 	versionLabel  = "mole.version"
@@ -385,10 +388,89 @@ func confirm(r *bufio.Reader, label string) (bool, error) {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y"), nil
 }
 
+// ---------- image updates ----------
+
+// updateImage pulls the image from the registry: a missing image is
+// downloaded without asking, a newer one is offered, and if the check fails
+// (offline, no access) the local image is used as is.
+func updateImage(r *bufio.Reader, image string, dry bool) error {
+	step(1, 5, "Docker image")
+	pull := []string{"pull", image}
+	if dry {
+		return runStream("docker", pull, true)
+	}
+	local, exists := localDigests(image)
+	if !exists {
+		fmt.Printf("  Image %q not found locally — downloading.\n", image)
+		return runStream("docker", pull, false)
+	}
+	remote, err := remoteDigest(image)
+	if err != nil {
+		fmt.Printf("  Could not check for a newer image (%v) — using the local one.\n", err)
+		return nil
+	}
+	if hasDigest(local, remote) {
+		fmt.Printf("  Image %q is up to date.\n", image)
+		return nil
+	}
+	fmt.Printf("  A new version of %q is available.\n", image)
+	download, err := confirm(r, "Download it")
+	if err != nil {
+		return err
+	}
+	if !download {
+		fmt.Println("  Using the local image.")
+		return nil
+	}
+	return runStream("docker", pull, false)
+}
+
+// remoteDigest asks the registry for image's manifest digest via the core
+// docker CLI (`docker manifest inspect`), so the operator's docker logins
+// apply and no extra plugin is needed.
+func remoteDigest(image string) (string, error) {
+	out, err := exec.Command("docker", "manifest", "inspect", "-v", image).Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%s", strings.Join(strings.Fields(string(ee.Stderr)), " "))
+		}
+		return "", err
+	}
+	var m struct {
+		Descriptor struct {
+			Digest string `json:"digest"`
+		} `json:"Descriptor"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil || m.Descriptor.Digest == "" {
+		return "", fmt.Errorf("unexpected manifest output")
+	}
+	return m.Descriptor.Digest, nil
+}
+
+// localDigests returns the registry digests the local image was pulled as
+// (empty for a locally built image) and whether the image exists at all.
+func localDigests(image string) ([]string, bool) {
+	out, err := exec.Command("docker", "image", "inspect",
+		"--format", "{{range .RepoDigests}}{{println .}}{{end}}", image).Output()
+	if err != nil {
+		return nil, false
+	}
+	return strings.Fields(string(out)), true
+}
+
+// hasDigest reports whether any repo digest ("repo@sha256:...") is digest.
+func hasDigest(repoDigests []string, digest string) bool {
+	for _, d := range repoDigests {
+		if strings.HasSuffix(d, "@"+digest) {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------- the five steps ----------
 
 func buildImage(image, version string, dry bool) error {
-	step(1, 5, "Build the Docker image")
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("docker not found on PATH")
 	}
@@ -687,9 +769,10 @@ func main() {
 		objective  = flag.String("objective", "", "objective text (skips the prompt)")
 		maxSteps   = flag.Int("max-steps", 0, "tool-step budget (0 = harness default)")
 		network    = flag.String("network", "", "docker network (e.g. host)")
-		noBuild    = flag.Bool("no-build", false, "skip the image build")
+		build      = flag.Bool("build", false, "build the image locally instead of pulling it")
+		noBuild    = flag.Bool("no-build", false, "skip step 1 and use the local image as is")
 		noAddHost  = flag.Bool("no-add-host", false, "do not map host.docker.internal (remote LLM)")
-		dryRun     = flag.Bool("dry-run", false, "print the docker run command without executing it")
+		dryRun     = flag.Bool("dry-run", false, "print the planned docker commands without executing them")
 	)
 	flag.Parse()
 
@@ -726,13 +809,18 @@ func main() {
 
 	r := bufio.NewReader(os.Stdin)
 
-	if !*noBuild {
-		if err := ensureImage(r, cfg.Image, *dryRun); err != nil {
-			fmt.Fprintln(os.Stderr, "mole:", err)
-			os.Exit(1)
-		}
-	} else {
-		fmt.Printf("\n[1/5] Build the Docker image — skipped (-no-build)\n")
+	var imageErr error
+	switch {
+	case *noBuild:
+		fmt.Printf("\n[1/5] Docker image — skipped (-no-build)\n")
+	case *build:
+		imageErr = ensureImage(r, cfg.Image, *dryRun)
+	default:
+		imageErr = updateImage(r, cfg.Image, *dryRun)
+	}
+	if imageErr != nil {
+		fmt.Fprintln(os.Stderr, "mole:", imageErr)
+		os.Exit(1)
 	}
 	if err := configure(r, *config, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "mole:", err)

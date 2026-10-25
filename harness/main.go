@@ -1,5 +1,3 @@
-// Command mole is a scope-gated, LLM-driven security reconnaissance harness.
-//
 // Usage:
 //
 //	mole init                          interactive scoping; writes engagement/<name>/scope.yaml
@@ -20,6 +18,8 @@ import (
 
 	"github.com/cubyte-nl/agent-core/llm"
 	"mole/internal/agent"
+	"mole/internal/knowledge"
+	"mole/internal/ledger"
 	"mole/internal/scope"
 	"mole/internal/tools"
 	"mole/internal/wizard"
@@ -118,11 +118,35 @@ func cmdRun(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	reg := tools.NewRegistry(s.VulnScanning)
+	// The findings ledger is the agent's working memory: persisted next to
+	// scope.yaml so a resumed engagement keeps its findings.
+	led, err := ledger.New(filepath.Join(filepath.Dir(path), "ledger.json"))
+	if err != nil {
+		return err
+	}
+	// Technique knowledge, embedded in the binary: chunked and indexed once,
+	// served through the knowledge_search tool (always registered). The
+	// per-service enumeration checklists and the light-scripting guide apply
+	// to every engagement; the post-foothold playbook, the
+	// privilege-escalation checklist and the core web-bug playbook ship only
+	// when vulnerability scanning / exploitation is in scope.
+	var kbDocs []knowledge.Doc
+	kbDocs = append(kbDocs,
+		knowledge.Doc{Name: "service-enumeration.md", Content: serviceEnumeration},
+		knowledge.Doc{Name: "light-scripting.md", Content: lightScripting})
+	if s.VulnScanning {
+		kbDocs = append(kbDocs,
+			knowledge.Doc{Name: "linux-windows-basics.md", Content: linuxWindowsBasics},
+			knowledge.Doc{Name: "privilege-escalation.md", Content: privEscalation},
+			knowledge.Doc{Name: "web-bugs.md", Content: webBugs})
+	}
+	kb := knowledge.New(kbDocs)
+	reg := tools.NewRegistry(s.VulnScanning, led, kb)
 	res, err := agent.Run(ctx, s, client, reg, agent.Config{
 		MaxSteps:  *maxSteps,
 		Objective: *objective,
 		ReportDir: filepath.Dir(path),
+		Ledger:    led,
 		Out:       func(line string) { fmt.Println(line) },
 	})
 	if err != nil {
