@@ -16,9 +16,9 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/cubyte-nl/agent-core/knowledge"
 	"github.com/cubyte-nl/agent-core/llm"
 	"mole/internal/agent"
-	"mole/internal/knowledge"
 	"mole/internal/ledger"
 	"mole/internal/scope"
 	"mole/internal/tools"

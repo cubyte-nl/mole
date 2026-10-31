@@ -8,7 +8,7 @@
 FROM golang:1.27 AS build
 WORKDIR /src
 # Dependencies (incl. agent-core) are vendored, so the module build needs no
-# GitLab access. (The nuclei/ffuf installs below still fetch from the network.)
+# GitLab access. (The nuclei/ffuf/yq installs below still fetch from the network.)
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mole .
 # Vulnerability-scanning tooling (opt-in via vuln_scanning: true). Inert for recon-only
@@ -16,6 +16,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/mole .
 # image is self-contained. Templates are fetched by nuclei on first use.
 RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \
     && go install github.com/ffuf/ffuf/v2@latest
+# yq (YAML/JSON processor) for the light-scripting tool.
+RUN go install github.com/mikefarah/yq/v4@latest
 
 FROM ubuntu:24.04
 RUN apt-get update \
@@ -29,6 +31,7 @@ RUN apt-get update \
         hashcat \
         ncat \
         curl \
+        jq \
     && rm -rf /var/lib/apt/lists/*
 # Metasploit payload generation (msfvenom) from the official apt repo, pinned
 # by the committed signing key (Rapid7 Release Engineering). The prebuilt
@@ -46,6 +49,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/metasploit-framework.gpg] https://d
 COPY --from=build /out/mole /usr/local/bin/mole
 COPY --from=build /go/bin/nuclei /usr/local/bin/nuclei
 COPY --from=build /go/bin/ffuf /usr/local/bin/ffuf
+COPY --from=build /go/bin/yq /usr/local/bin/yq
 # Bundled wordlist for the crack tool (SecLists Pwdb_top-1000.txt).
 COPY data/wordlists/top1000.txt /usr/share/mole/wordlists/top1000.txt
 WORKDIR /work

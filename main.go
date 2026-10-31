@@ -10,10 +10,11 @@
 // Usage:
 //
 //	mole                         full interactive flow (pulls the image)
+//	mole init                    scope a new engagement (writes scope.yaml)
 //	mole -build                  build the image locally instead of pulling
 //	mole -no-build               use the local image as is
 //	mole -objective "..."        skip the objective prompt
-//	mole -dry-run                print the docker run command, don't execute
+//	mole -dry-run                print the docker commands, don't execute
 //
 // The MOLE harness itself lives in the harness/ subdirectory; reports and
 // scope files live in engagement/ (gitignored data).
@@ -33,6 +34,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"mole/internal/wizard"
 
 	"gopkg.in/yaml.v3"
 )
@@ -569,27 +572,19 @@ func askObjective(r *bufio.Reader, preset string) (string, error) {
 	return v, nil
 }
 
-// scopeFile mirrors the persisted fields of harness/internal/scope.Scope, in
-// the same field order, so the launcher can read and re-write the
-// engagement's scope.yaml without importing the harness module. The launcher
-// only ever changes `vuln_scanning`; everything else round-trips unchanged.
-type scopeFile struct {
-	Name         string     `yaml:"name"`
-	InScope      []string   `yaml:"in_scope"`
-	OutOfScope   []string   `yaml:"out_of_scope,omitempty"`
-	Ports        []int      `yaml:"ports,omitempty"`
-	VulnScanning bool       `yaml:"vuln_scanning,omitempty"`
-	Auth         authRecord `yaml:"authorisation"`
-}
-
-// authRecord mirrors scope.Authorization.
-type authRecord struct {
-	Basis     string `yaml:"basis"`
-	Operator  string `yaml:"operator"`
-	Date      string `yaml:"date"`
-	Reference string `yaml:"reference,omitempty"`
-	Client    string `yaml:"client,omitempty"`
-	Confirmed bool   `yaml:"confirmed"`
+// findEngagements lists the engagement names under dir that have a scope.yaml.
+func findEngagements(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, e := range entries {
+		if e.IsDir() && fileExists(filepath.Join(dir, e.Name(), "scope.yaml")) {
+			found = append(found, e.Name())
+		}
+	}
+	return found
 }
 
 // resolveEngagement determines which engagement's scope.yaml to touch: the
@@ -599,19 +594,10 @@ func resolveEngagement(dir, name string) (string, error) {
 	if name != "" {
 		return name, nil
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("no engagement found under %s", dir)
-	}
-	var found []string
-	for _, e := range entries {
-		if e.IsDir() && fileExists(filepath.Join(dir, e.Name(), "scope.yaml")) {
-			found = append(found, e.Name())
-		}
-	}
+	found := findEngagements(dir)
 	switch len(found) {
 	case 0:
-		return "", fmt.Errorf("no engagement found under %s (run the harness init first)", dir)
+		return "", fmt.Errorf("no engagement found under %s (run 'mole init' first)", dir)
 	case 1:
 		return found[0], nil
 	default:
@@ -622,8 +608,10 @@ func resolveEngagement(dir, name string) (string, error) {
 // askVulnScanning is step 4: it shows the vulnerability-scanning state
 // recorded in the engagement's scope.yaml and offers to change it. Enabling is
 // opt-in and requires a typed YES, the same authorisation pattern as the init
-// wizard. A missing or unreadable scope file is not fatal: the recorded scope
-// is kept and the run proceeds.
+// wizard. When no engagement exists at all, it offers to run the scoping
+// wizard inline, so a first run needs no separate harness build. A missing or
+// unreadable scope file is not fatal: the recorded scope is kept and the run
+// proceeds.
 func askVulnScanning(r *bufio.Reader, dir string, c *Config, dry bool) error {
 	step(4, 5, "Vulnerability scanning")
 	if dry {
@@ -631,9 +619,24 @@ func askVulnScanning(r *bufio.Reader, dir string, c *Config, dry bool) error {
 		return nil
 	}
 	name, err := resolveEngagement(dir, c.Engagement)
-	if err != nil {
-		fmt.Printf("  %s — keeping the recorded scope.\n", err)
-		return nil
+	if err != nil && len(findEngagements(dir)) == 0 {
+		// No engagement under dir at all: offer to create one with the
+		// scoping wizard.
+		if ok, werr := confirm(r, "Create a new engagement now"); werr != nil {
+			return werr
+		} else if ok {
+			if path, perr := wizard.Run(wizard.Options{Dir: dir, In: r, Out: os.Stdout}); perr != nil {
+				fmt.Printf("  %s — keeping the recorded scope.\n", perr)
+				return nil
+			} else {
+				fmt.Printf("  %s\n", path)
+			}
+		}
+		name, err = resolveEngagement(dir, c.Engagement)
+		if err != nil {
+			fmt.Printf("  %s — keeping the recorded scope.\n", err)
+			return nil
+		}
 	}
 	path := filepath.Join(dir, name, "scope.yaml")
 	raw, err := os.ReadFile(path)
@@ -641,7 +644,7 @@ func askVulnScanning(r *bufio.Reader, dir string, c *Config, dry bool) error {
 		fmt.Printf("  Cannot read %s: %v — keeping the recorded scope.\n", path, err)
 		return nil
 	}
-	var s scopeFile
+	var s wizard.ScopeFile
 	if err := yaml.Unmarshal(raw, &s); err != nil {
 		fmt.Printf("  Cannot parse %s: %v — keeping the recorded scope.\n", path, err)
 		return nil
@@ -760,7 +763,38 @@ func runContainer(c *Config, engagementDir, network string, addHost bool, object
 
 // ---------- main ----------
 
+// runInit implements the `mole init` subcommand: it walks the scoping wizard
+// and writes engagement/<name>/scope.yaml, the same file the harness init
+// writes. It needs no docker and none of the launcher's other flags, so a
+// first engagement can be created on a machine without a harness build. It
+// returns the process exit code.
+func runInit(args []string) int {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	dir := fs.String("dir", "engagement", "engagement directory")
+	engagement := fs.String("engagement", "", "engagement name (prefills the prompt)")
+	dryRun := fs.Bool("dry-run", false, "print the planned scope file, write nothing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if _, err := wizard.Run(wizard.Options{
+		Dir:        *dir,
+		PresetName: *engagement,
+		Dry:        *dryRun,
+		In:         os.Stdin,
+		Out:        os.Stdout,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "mole:", err)
+		return 1
+	}
+	return 0
+}
+
 func main() {
+	// `mole init` scopes a new engagement and needs neither docker nor the
+	// launcher's flags, so dispatch it before the docker check and parsing.
+	if len(os.Args) > 1 && os.Args[1] == "init" {
+		os.Exit(runInit(os.Args[2:]))
+	}
 	var (
 		image      = flag.String("image", defaultImage, "Docker image tag")
 		config     = flag.String("config", defaultConfig, "config file path")

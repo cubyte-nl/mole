@@ -2,7 +2,7 @@
 
 Source of truth for the post-foothold knowledge served to exploit-in-scope
 engagements through the `knowledge_search` tool (see `harness/docs.go`,
-`internal/knowledge` + `internal/tools`). The doc is chunked by heading and
+agent-core's `knowledge` package + `internal/tools`). The doc is chunked by heading and
 retrieved per query, so keep each section dense and self-contained: a chunk
 must stand on its own when returned, without the rest of the doc. The
 post-foothold checklists here feed the deeper privilege-escalation checklist
@@ -15,7 +15,9 @@ post-foothold checklists here feed the deeper privilege-escalation checklist
 1. Identify: `whoami`, `id` (group memberships often reveal the escape route),
    `uname -a`, `cat /etc/os-release`.
 2. Orient: `pwd`, `ls -la`, `ps aux`, listening services `ss -lntp` (or
-   `netstat -tlnp`), `ip a` / `ifconfig`.
+   `netstat -tlnp`), `ip a` / `ifconfig`. Am I in a container? `ls /.dockerenv`,
+   `cat /proc/1/cgroup` — if yes, the privilege-escalation doc's Container
+   escape section joins your checklist.
 3. Check direct privilege: `sudo -l` — every permitted command is a candidate
    escalation path; `NOPASSWD` entries are the strongest.
 4. Harvest credentials you already sit on: `env`, `~/.bash_history`,
@@ -151,20 +153,34 @@ post-foothold checklists here feed the deeper privilege-escalation checklist
 - **Kerberos**: tickets in memory (lsass); `klist` lists them; a ticket for
   user X moves you to X's hosts (pass-the-ticket).
 
-### Lateral movement (after the foothold)
+## Lateral movement and adjacent hosts
+
+After the foothold, note the hosts reachable from the target and the services
+that accept the credentials you now sit on.
 
 Pattern: valid credential (or hash/ticket) → pick a channel → shell on the
 next host → repeat the checklist.
 
-- **SMB admin shares**: `\\host\C$` with valid creds — stage a binary, then
-  run it.
-- **Service creation** (psexec-style): `sc \\host create svc binPath=
-  C:\path\evil.exe` then `sc \\host start svc`.
-- **WMI**: `Invoke-WmiMethod -Class Win32_Process -Name Create -Arguments
-  @{Command="cmd.exe /c whoami"} -ComputerName host`.
-- **WinRM**: `Enter-PSSession host` / `Invoke-Command` (needs 5985/5986 open
-  and remoting enabled).
-- **RDP** (3389) when you have valid creds and it is open.
+- **In scope → pursue.** Pursue it through the channel that matches your
+  access:
+  - **Windows**: SMB admin shares (`\\host\C$` — stage a binary, then run
+    it); service creation (psexec-style: `sc \\host create svc
+    binPath=C:\path\evil.exe`, then `sc \\host start svc`); WMI
+    (`Invoke-WmiMethod -Class Win32_Process -Name Create`); WinRM
+    (`Enter-PSSession host` — needs 5985/5986 and remoting enabled); RDP
+    (3389) with valid creds.
+  - **Linux**: SSH with the harvested credentials or keys; then work the
+    far side's own checklist (sudo, SUID, cron, service scripts).
+- **Out of scope → record, do not touch.** A reachable adjacent host that is
+  not in scope is assessed passively only: no connection, no banner read, no
+  probe — even from the foothold. Record a finding from what you already
+  know: the host (name and resolved address), the service and port as seen in
+  configs, env, or routing; where credentials for it live (never the values);
+  and the concrete attack path it implies, stated with its preconditions
+  (e.g. "valid database credentials plus a MySQL account with the FILE
+  privilege ⇒ loadable plugin ⇒ code execution on that host"). Mark it left
+  unexploited on scope grounds; list it in recommendations as the next
+  target if the scope expands.
 
 ## Harness toolset (payload, netcat, crack)
 

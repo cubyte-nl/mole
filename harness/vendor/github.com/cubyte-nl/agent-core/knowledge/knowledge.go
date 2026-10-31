@@ -1,14 +1,12 @@
-// Package knowledge is MOLE's mini-RAG: it indexes the technique docs
-// (chunked by markdown heading) — the per-service enumeration checklists,
-// and the post-foothold playbook in exploit-in-scope engagements — and
-// returns the sections most relevant to a query, so the model can consult
-// them at the moment it needs it (the knowledge_search tool) instead of
-// carrying the full text in the system prompt.
+// Package knowledge is the agents' mini-RAG: it indexes markdown docs
+// (chunked by heading) and returns the sections most relevant to a query, so
+// the model can consult them at the moment it needs them (through a search
+// tool) instead of carrying the full text in the system prompt.
 //
 // Retrieval is deterministic and dependency-free: query and chunks are
 // tokenised, and chunks are ranked by weighted keyword overlap — a heading or
 // doc-title hit weighs three times a body hit, and consecutive query terms
-// both present in a chunk earn a phrase bonus. At the size of this corpus
+// both present in a chunk earn a phrase bonus. At the size of these corpora
 // (tens of chunks, a few dozen KB) that is as reliable as embeddings and far
 // easier to debug. The scorer is isolated behind Search so an
 // embedding-based one can replace it later without touching the tool or the
@@ -31,7 +29,7 @@ type Doc struct {
 // Chunk is one retrievable section of a doc: where it came from, the heading
 // path below the doc title, and the section text.
 type Chunk struct {
-	Source  string // e.g. "linux-windows-basics.md"
+	Source  string // e.g. "linux-host-triage.md"
 	Title   string // the doc's # title
 	Heading string // heading path, e.g. "Linux > Permissions"
 	Body    string // the section's text
@@ -113,8 +111,7 @@ func (s *Store) Search(query string, k int) []Chunk {
 }
 
 // maxChunkBody caps how much of one section a search result carries: enough
-// to act on, and the corpus will grow (issue #5 and beyond), so keep the
-// model's context bounded.
+// to act on, while keeping the model's context bounded as corpora grow.
 const maxChunkBody = 1600
 
 // Render formats search hits for a tool result: each hit is labelled with its
@@ -178,7 +175,7 @@ func chunkDoc(d Doc) []Chunk {
 	return out
 }
 
-// stopwords are the words that carry no topical signal in this corpus.
+// stopwords are the words that carry no topical signal.
 var stopwords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
 	"be": true, "but": true, "by": true, "can": true, "did": true, "do": true,

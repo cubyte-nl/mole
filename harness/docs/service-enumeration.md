@@ -2,7 +2,7 @@
 
 Source of truth for the per-service enumeration checklists served to the
 model through the `knowledge_search` tool (see `harness/docs.go`,
-`internal/knowledge` + `internal/tools`). The doc is chunked by heading and
+agent-core's `knowledge` package + `internal/tools`). The doc is chunked by heading and
 retrieved per query, so each section must stand alone when returned, without
 the rest of the doc. Query it with the service name ("ssh enumeration",
 "mongodb", "web directory fuzzing") as soon as nmap reports the service.
@@ -39,6 +39,10 @@ the rest of the doc. Query it with the service name ("ssh enumeration",
 - Read the hits: a 200 on `/admin` is an exposed panel; a 403/401 on
   `/wp-admin` means the CMS is present even if access is denied; a 200 on
   `.git/config` is source leakage — inspect what it reveals and record it.
+- Setup/install surfaces: probe the application's setup and install
+  endpoints (`setup.php`, `install.php`, `/setup`, `/install`) directly —
+  they are often reachable after initialisation, and a live create/reset
+  control is a finding in itself (see the web-bug playbook's setup section).
 - Check `robots.txt` and `sitemap.xml`: they list paths the operator wanted
   hidden from crawlers.
 - API surfaces: if `/api`, `/v2`, `/v3` or a swagger doc responds, probe the
@@ -75,23 +79,31 @@ the rest of the doc. Query it with the service name ("ssh enumeration",
   RDP is the service where unauthorised credential testing causes the most
   lockout noise, so the authorisation must be explicit.
 
-## Databases (MySQL, PostgreSQL, MongoDB, Redis)
+## Databases (MySQL, PostgreSQL, MSSQL, MongoDB, Redis)
 
 - Banner/version first: `nmap -sV` on the port; databases print versions in
   their banners more reliably than almost any service.
 - MongoDB (27017): an open port is already a finding; run `nuclei` with
-  exposure tags — unauthenticated access (the classic misconfiguration) and
-  default `admin/admin` are the checks that matter. Record the database
-  names the response reveals as evidence, do not pull data.
-- Redis (6379): open and unauthenticated Redis is a finding; `nuclei`
-  covers the standard checks (info disclosure, no-auth access). Record the
-  version from the banner.
+  exposure tags (unauthenticated access, default `admin/admin`). Record the
+  database names the response reveals, do not pull data.
+- Redis (6379): open, unauthenticated Redis is a finding; `nuclei` covers
+  the standard checks (info disclosure, no-auth access). Record the version
+  from the banner.
 - MySQL (3306) / PostgreSQL (5432): version → CVEs via `nuclei`; `nmap
   --script mysql-empty-password,mysql-enum` and `pgsql-brute` are auth
-  attempts — run the empty-password check only, and treat a hit as a
-  critical finding.
-- A database port open to the internet (as opposed to internal-only)
-  doubles the severity of everything else on that host: record the exposure.
+  attempts — run the empty-password check only; a hit is a critical finding.
+- A database port open to the internet (vs internal-only) doubles the
+  severity of everything else on that host: record the exposure.
+- **Authenticated from a foothold** (exploitation in scope, valid database
+  credentials harvested from the target): the DB host becomes a
+  code-execution target. Record the grants as evidence:
+  - MySQL: `SHOW GRANTS FOR CURRENT_USER();` — `FILE` privilege plus a
+    writable `@@plugin_dir` ⇒ load a UDF ⇒ RCE; `SUPER` opens `INTO OUTFILE`.
+  - PostgreSQL: superuser (`rolsuper` in `pg_roles`) ⇒
+    `COPY (SELECT 1) FROM PROGRAM 'id'`, or `lo_import` of a shared object.
+  - MSSQL (1433): `xp_cmdshell` enabled ⇒ direct OS command execution.
+  The RCE capability is itself a finding; if the DB host is out of scope,
+  apply the lateral-movement passive rule: record, do not exploit.
 
 ## Samba (445)
 

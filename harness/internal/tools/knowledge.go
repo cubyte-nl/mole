@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cubyte-nl/agent-core/knowledge"
 	core "github.com/cubyte-nl/agent-core/tools"
 
-	"mole/internal/knowledge"
 	"mole/internal/scope"
 )
 

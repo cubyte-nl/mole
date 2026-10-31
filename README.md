@@ -1,5 +1,9 @@
 # MOLE
 
+<p align="center">
+  <img src="assets/mole.png" alt="Cyberpunk Mole" width="420">
+</p>
+
 AI-driven offensive security recon for a single engagement. This repo holds
 two things:
 
@@ -11,12 +15,31 @@ two things:
 
 ## Quick start
 
+First build the launcher front-end:
+
 ```sh
 go build -o mole .
+```
+
+### Scope an engagement
+
+```sh
+./mole init
+```
+
+`mole init` walks the scoping wizard (name, authorisation basis, in/out of
+scope, ports, and the vulnerability-scanning opt-in) and writes
+`engagement/<name>/scope.yaml` — the same file `harness mole init` writes,
+so an engagement created this way works with the harness unchanged. It needs
+no docker and no harness build.
+
+### Run the engagement
+
+```sh
 ./mole
 ```
 
-`mole` walks through four steps:
+That `./mole` run walks through five steps:
 
 1. **Docker image** — by default pulls the image from the registry: a missing
    image is downloaded, a newer one is offered, and if the registry can't be
@@ -31,7 +54,10 @@ go build -o mole .
    (prefilled from any existing config; values are passed to the container
    via `-e` since the LLM stays outside)
 3. **Objective** — asks for the recon objective
-4. **Run** — `docker run`s the image with the engagement volume mounted and
+4. **Vulnerability scanning** — shows the engagement's recorded state and
+   offers to change it (enabling is opt-in and requires a typed `YES`); when
+   no engagement exists at all, it offers to run `mole init` inline
+5. **Run** — `docker run`s the image with the engagement volume mounted and
    streams (tails) the container output to the terminal
 
 When it finishes, the report and transcript land in
@@ -52,6 +78,16 @@ When it finishes, the report and transcript land in
 -no-add-host  don't map host.docker.internal (remote LLM)
 -dry-run      print the planned docker commands without executing them
 ```
+
+### The `init` subcommand
+
+```
+mole init [-dir DIR] [-engagement NAME] [-dry-run]
+```
+
+Runs the scoping wizard and writes `engagement/<name>/scope.yaml` (mode
+0600). `-engagement` prefills the name prompt (press Enter to keep it);
+`-dry-run` prints the planned file without writing.
 
 ## LLM
 

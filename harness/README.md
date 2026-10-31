@@ -190,7 +190,10 @@ is still honoured). When enabled:
 - `http_request` (model-directed HTTP) is registered as a tool for the
   crafted probes `http_probe` (GET-only) cannot express: POST forms, custom
   headers, arbitrary method from an allowlist (GET/POST/PUT/PATCH/DELETE/
-  HEAD/OPTIONS). Response body is capped at 8 KB.
+  HEAD/OPTIONS). It follows redirects by default; `follow_redirects=false`
+  stops at the first hop and returns that hop's status and `Location` (used
+  to see where a redirect points without the request leaving the scope).
+  Response body is capped at 8 KB.
 - `exec` (on-target command execution) is registered as a tool for
   exploit-in-scope engagements. It is stateful: the first call registers the
   command-execution vector (url, method GET/POST, the injectable param, the
@@ -252,8 +255,9 @@ full text in the system prompt.
   keyword overlap — a heading/doc-title hit weighs three times a body hit,
   and consecutive query terms both present earn a phrase bonus. Deterministic,
   dependency-free, and debuggable at this corpus size (tens of chunks). The
-  scorer sits behind `Store.Search`, so an embedding-based scorer can replace
-  it later without touching the tool or the prompt.
+  scorer sits behind `Store.Search` in agent-core's `knowledge` package
+  (shared with Collie), so an embedding-based scorer can replace it later
+  without touching the tool or the prompt.
 - **Gating.** `knowledge_search` is always registered (it reads the embedded
   corpus and never touches a target); the *corpus* is what changes — the
   post-foothold playbook and the privilege-escalation checklist are loaded
@@ -271,7 +275,6 @@ full text in the system prompt.
 | `internal/wizard` | Interactive startup scoping that produces a binding `scope.yaml`. |
 | `internal/llm` | Minimal OpenAI-compatible chat client with function calling. |
 | `internal/tools` | The gated recon tools (DNS, nmap, TCP, HTTP probe, TLS probe, security headers, subdomains), the findings tools (record/update finding), the opt-in vulnerability-scanning tools (nuclei, ffuf, web_check, http_request, exec + the shared per-host rate limiter), the always-available knowledge_search and shell tools + registry. |
-| `internal/knowledge` | The mini-RAG: heading chunking + weighted keyword retrieval over the embedded technique docs. |
 | `internal/ledger` | The findings ledger: persistent working memory, re-injected every turn, rendered into the report. |
 | `internal/agent` | The LLM-driven loop: prompt, tool dispatch, budget, report. |
 | `main.go` | The CLI: `init`, `run`, `check`. |

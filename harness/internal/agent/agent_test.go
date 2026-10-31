@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cubyte-nl/agent-core/knowledge"
 	"github.com/cubyte-nl/agent-core/llm"
-	"mole/internal/knowledge"
 	"mole/internal/ledger"
 	"mole/internal/scope"
 	"mole/internal/tools"

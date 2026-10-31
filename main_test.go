@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"mole/internal/wizard"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,9 +43,9 @@ func runAskVulnScanning(t *testing.T, input, scope string, dry bool) string {
 	return string(out)
 }
 
-func mustScope(t *testing.T, s string) scopeFile {
+func mustScope(t *testing.T, s string) wizard.ScopeFile {
 	t.Helper()
-	var got scopeFile
+	var got wizard.ScopeFile
 	if err := yaml.Unmarshal([]byte(s), &got); err != nil {
 		t.Fatalf("rewritten scope.yaml does not parse: %v\n%s", err, s)
 	}
@@ -124,11 +126,43 @@ func TestAskVulnScanningDryRun(t *testing.T) {
 }
 
 func TestAskVulnScanningNoEngagement(t *testing.T) {
-	// No engagement under dir: warn, keep scope, and return without error.
+	// No engagement under dir: the wizard offer is declined, scope kept, and
+	// it returns without error.
 	dir := t.TempDir()
-	r := bufio.NewReader(strings.NewReader("yes\nYES\n"))
+	r := bufio.NewReader(strings.NewReader("no\n"))
 	if err := askVulnScanning(r, dir, &Config{}, false); err != nil {
 		t.Fatalf("askVulnScanning should not fail on a missing engagement: %v", err)
+	}
+}
+
+func TestAskVulnScanningOffersWizard(t *testing.T) {
+	// No engagement under dir: accept the inline offer and drive the wizard
+	// to completion; scope.yaml must be created with mode 0600, and the
+	// follow-up step-4 question keeps the default (disabled).
+	const wizardInput = "cubyte\n1\nsven\ncubyte.nl\nnode2.cubby.nl\n443,8080\nno\nYES\n"
+	dir := t.TempDir()
+	r := bufio.NewReader(strings.NewReader("y\n" + wizardInput + "\n"))
+	if err := askVulnScanning(r, dir, &Config{}, false); err != nil {
+		t.Fatalf("askVulnScanning: %v", err)
+	}
+	path := filepath.Join(dir, "cubyte", "scope.yaml")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("wizard did not write scope.yaml: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("scope.yaml mode = %o, want 600", perm)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := mustScope(t, string(raw))
+	if s.Name != "cubyte" || len(s.InScope) != 1 || s.InScope[0] != "cubyte.nl" {
+		t.Errorf("scope record wrong: %+v", s)
+	}
+	if s.VulnScanning {
+		t.Errorf("vuln_scanning = true, want the reconnaissance-only default")
 	}
 }
 

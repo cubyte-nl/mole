@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"mole/internal/knowledge"
+	"github.com/cubyte-nl/agent-core/knowledge"
 )
 
 // fixtureKB is a minimal stand-in for the embedded post-foothold playbook.

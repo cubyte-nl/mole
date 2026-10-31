@@ -43,8 +43,10 @@ func (HTTPRequest) Mutating() bool { return true }
 func (HTTPRequest) Description() string {
 	return "HTTP(S) request with arbitrary method, headers and body against an in-scope URL; " +
 		"returns status, headers and the start of the body. Use it for crafted validation probes " +
-		"that http_probe (GET-only) cannot express, e.g. POSTing a form. Payloads must be " +
-		"non-destructive; requests are rate-limited in code."
+		"that http_probe (GET-only) cannot express, e.g. POSTing a form. By default it follows " +
+		"redirects; follow_redirects=false returns the first hop's status and Location header " +
+		"without following (needed to see where a redirect points, and to keep requests from " +
+		"leaving the scope). Payloads must be non-destructive; requests are rate-limited in code."
 }
 
 func (HTTPRequest) Parameters() map[string]any {
@@ -57,6 +59,9 @@ func (HTTPRequest) Parameters() map[string]any {
 				"additionalProperties": map[string]any{"type": "string"}},
 			"body": map[string]any{"type": "string", "description": "Request body (ignored for GET and HEAD); sent as " +
 				"application/x-www-form-urlencoded unless Content-Type is given in headers"},
+			"follow_redirects": map[string]any{"type": "boolean", "description": "Follow 3xx redirects (default true). " +
+				"Set false to stop at the first hop: the result carries the redirect's status and Location " +
+				"header so you can see where it points without the request leaving the scope"},
 		},
 		"required": []any{"url"},
 	}
@@ -110,6 +115,19 @@ func (HTTPRequest) Run(ctx context.Context, s *scope.Scope, args map[string]any)
 		return core.Result{Tool: name, Target: u, Allowed: true, Reason: "rate limit: " + err.Error()}
 	}
 	client := &http.Client{Timeout: httpRequestTimeout}
+	// follow_redirects defaults to true (the historical behaviour); only an
+	// explicit false stops at the first hop. Stopping matters: the default
+	// client follows up to 10 redirects, and a Location on a hostile target
+	// can point outside the scope — the gate only checks the first host.
+	follow := true
+	if _, present := args["follow_redirects"]; present {
+		follow = boolArg(args, "follow_redirects")
+	}
+	if !follow {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return core.Result{Tool: name, Target: u, Allowed: true, Reason: "request failed: " + err.Error()}

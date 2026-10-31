@@ -301,6 +301,51 @@ func TestHTTPRequestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestFollowRedirects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			w.Header().Set("Location", "/landed")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		fmt.Fprint(w, "landed at "+r.URL.Path)
+	}))
+	defer srv.Close()
+	s := testScope("127.0.0.1")
+
+	// Default (argument absent): the redirect is followed to the final hop.
+	res := (HTTPRequest{}).Run(testCtx, s, map[string]any{"url": srv.URL + "/redirect"})
+	if !res.Allowed {
+		t.Fatalf("http_request denied: %s", res.Reason)
+	}
+	pl := res.Payload.(map[string]any)
+	if pl["status"] != http.StatusOK {
+		t.Errorf("default follow: status = %v, want 200", pl["status"])
+	}
+	bodyStart, _ := pl["body_start"].(string)
+	if !strings.Contains(bodyStart, "landed at /landed") {
+		t.Errorf("default follow did not reach the target: %q", bodyStart)
+	}
+
+	// follow_redirects=false: the first hop's status and Location come back
+	// and the redirect is not followed.
+	res2 := (HTTPRequest{}).Run(testCtx, s, map[string]any{"url": srv.URL + "/redirect", "follow_redirects": false})
+	if !res2.Allowed {
+		t.Fatalf("http_request (no follow) denied: %s", res2.Reason)
+	}
+	pl2 := res2.Payload.(map[string]any)
+	if pl2["status"] != http.StatusFound {
+		t.Errorf("no-follow: status = %v, want 302", pl2["status"])
+	}
+	hdrs, _ := pl2["headers"].(map[string]string)
+	if loc := hdrs["Location"]; loc != "/landed" {
+		t.Errorf("no-follow: Location = %q, want /landed", loc)
+	}
+	if bodyStart2, _ := pl2["body_start"].(string); strings.Contains(bodyStart2, "landed at") {
+		t.Errorf("no-follow: the redirect was followed: %q", bodyStart2)
+	}
+}
+
 func TestHTTPRequestMethodAllowlist(t *testing.T) {
 	s := testScope("127.0.0.1")
 	res := (HTTPRequest{}).Run(testCtx, s, map[string]any{"url": "http://127.0.0.1/x", "method": "TRACE"})

@@ -1,6 +1,7 @@
-# github.com/cubyte-nl/agent-core v0.4.3
+# github.com/cubyte-nl/agent-core v0.4.5
 ## explicit; go 1.27.1
 github.com/cubyte-nl/agent-core/agent
+github.com/cubyte-nl/agent-core/knowledge
 github.com/cubyte-nl/agent-core/llm
 github.com/cubyte-nl/agent-core/tools
 # gopkg.in/yaml.v3 v3.0.1

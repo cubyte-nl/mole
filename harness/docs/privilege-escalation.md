@@ -22,8 +22,9 @@ A vector needs everything the app requires:
   keeps the app's own command intact (e.g. `127.0.0.1` for a ping field);
 - `fields`: companion form fields the endpoint expects — most form endpoints
   run nothing unless the submit button is also posted (e.g. `Submit: Submit`);
-- `headers`: the session `Cookie` plus app-state cookies (a DVWA-style
-  `security=low` level cookie). The tools keep no cookies between calls, and
+- `headers`: the session `Cookie` plus app-state cookies (e.g. a
+  client-controlled security-level cookie such as `security=low`). The tools
+  keep no cookies between calls, and
   the session Cookie must come from the app's own `Set-Cookie` after a real
   login — a fabricated ID authenticates nothing; the page keeps serving the
   login form.
@@ -55,9 +56,18 @@ Work in this order — cheap and likely first:
    spot-check for cron scripts, SUID binaries, `/etc/shadow`, configs.
 6. Writable cron: spool locations, then the scripts and binaries they call
    (see the cron section).
-7. Kernel: `uname -a` — compare against known local exploits.
+7. Kernel: `uname -a` — record the full output (the kernel version string) as
+   evidence, compare against known local exploits. "No kernel exploit applies"
+   without the version string is not a finding.
 8. Docker socket: `ls -la /var/run/docker.sock` — if accessible:
    `docker run -v /:/h --rm -it alpine chroot /h` (or `nsenter --target 1 --mount --uts --ipc --net --pid -- sh`).
+9. Container escape: if the target is a container, work the Container escape
+   section.
+
+A negative conclusion is a finding too: when the checklist ends without a
+vector, record "no escalation path found" and cite the outputs that closed
+each branch (kernel version string, decoded capability set, mount list) —
+show what was checked, not just that nothing was found.
 
 ### sudo
 
@@ -123,6 +133,31 @@ Enumerate, then match against the abusable list:
   logic.
 - systemd timers (modern distros): `systemctl list-timers` plus the unit
   files they point at — check the ExecStart script for writability.
+
+### Container escape
+
+First establish you are in a container: `/.dockerenv` exists, `/proc/1/cgroup`
+shows docker/containerd paths, or `systemd-detect-virt` reports container. If
+not, stop — the rest applies to the host. Then, per signal:
+
+- **Granted capabilities** (the ones that matter — `getcap` only lists *file*
+  capabilities, not the container's granted set): `grep CapEff /proc/self/status`,
+  then `capsh --decode=<value>`. `CAP_SYS_ADMIN` is the escape enabler (mount,
+  nsenter, unshare); `CAP_SYS_PTRACE` = attach to host processes. Record the
+  decoded set even when it looks empty — "no elevated caps" is only a finding
+  once it is recorded.
+- **Privileged mode**: `CapEff` at 0000003fffffffff (the full set) or host
+  devices visible under `/dev` (e.g. `/dev/sda`, `/dev/mem`). Then:
+  `nsenter --target 1 --mount --uts --ipc --net --pid -- sh` (PID 1's
+  namespaces are the host's), or mount a host disk: `mount /dev/sda1 /mnt
+  && chroot /mnt`.
+- **Host mounts**: `cat /proc/mounts` / `df -h` — a mounted host path
+  (docker.sock, /var, /etc, a volume onto the host fs) is a direct bridge:
+  write through it, or use the socket.
+- **Docker socket**: covered by step 8 of the escalation order.
+- **Kernel**: a container shares the host kernel — the step 7 version string
+  is your exploit surface here too; a container kernel exploit is a host
+  compromise.
 
 ## Windows
 

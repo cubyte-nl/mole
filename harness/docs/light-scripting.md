@@ -23,7 +23,7 @@ script minimal enough to review in the transcript.
 
 ## Bash patterns
 
-`jq` is not installed; `curl`, `grep`, `sed`, `awk`, and `python3` are.
+`curl`, `grep`, `sed`, `awk`, `python3`, `jq` (JSON) and `yq` (YAML) are installed.
 
 - Patch and run an exploit one-liner:
   `curl -s http://TARGET:PORT/path -d 'id=1' | grep -o 'root:'` — replace the
@@ -34,6 +34,8 @@ script minimal enough to review in the transcript.
   `curl -s -c /tmp/c.txt -d 'user=u&pass=p' http://TARGET:PORT/login && curl -s -b /tmp/c.txt http://TARGET:PORT/secret`.
 - Loop over in-scope hosts (never more):
   `for h in host1 host2; do echo "== $h"; curl -s -o /dev/null -w '%{http_code}\n' http://$h:8080/; done`.
+- Parse JSON/YAML responses with `jq`/`yq`:
+  `curl -s http://TARGET:PORT/api | jq -r '.flag'`.
 - Parse with python when the text is structured:
   `curl -s http://TARGET:PORT/api | python3 -c "import sys,json; print(json.load(sys.stdin)['flag'])"`.
 

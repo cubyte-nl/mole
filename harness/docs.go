@@ -5,8 +5,9 @@ import _ "embed"
 // linuxWindowsBasics is the post-foothold playbook for exploit-in-scope
 // engagements (docs/linux-windows-basics.md). It is embedded — the container
 // image ships only the binary (see Dockerfile) and the model has no file
-// access — and served to the model through retrieval (internal/knowledge +
-// the knowledge_search tool) rather than pasted into the system prompt.
+// access — and served to the model through retrieval (agent-core's knowledge
+// package + the knowledge_search tool) rather than pasted into the system
+// prompt.
 //
 //go:embed docs/linux-windows-basics.md
 var linuxWindowsBasics string
