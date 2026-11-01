@@ -5,7 +5,7 @@
 </p>
 
 AI-driven offensive security recon for a single engagement. This repo holds
-two things:
+three things:
 
 | Path          | What it is                                                                 |
 |---------------|----------------------------------------------------------------------------|

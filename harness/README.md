@@ -247,7 +247,9 @@ full text in the system prompt.
   after a foothold, CLI, permissions, services, cron, credentials, lateral
   movement) and `docs/privilege-escalation.md` (the post-foothold
   privilege-escalation checklist: Linux sudo/SUID/cron, Windows tokens and
-  stored credentials) are loaded only when exploitation is in scope. All are
+  stored credentials) and `docs/web-bugs.md` (the core web-bug playbook: what
+  to look for, minimal payloads, safe validation) are loaded only when
+  exploitation is in scope. All are
   embedded in the binary (the image ships only the binary and the model has
   no file access) and chunked at `##`/`###` headings; each chunk carries its
   source doc and heading path.
